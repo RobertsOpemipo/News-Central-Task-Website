@@ -1,3 +1,4 @@
+// src/app/actions/tasks.ts
 "use server";
 
 import { db } from "@/db";
@@ -6,11 +7,41 @@ import { eq, desc } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 
-// 1. Fetch tasks for a selected day
+// Internal helper: Extract verified DB session user
+async function getAuthenticatedUser() {
+  const supabase = await createClient();
+  const {
+    data: { user: authUser },
+  } = await supabase.auth.getUser();
+
+  if (!authUser?.email) {
+    return null;
+  }
+
+  const [dbUser] = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      role: users.role,
+      unitId: users.unitId,
+    })
+    .from(users)
+    .where(eq(users.email, authUser.email.toLowerCase()))
+    .limit(1);
+
+  return dbUser || null;
+}
+
+// 1. Fetch tasks for a selected day (Accessible by any authenticated user)
 export async function getDayTasks(
-  day: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun",
+  day: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"
 ) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return [];
+    }
+
     const records = await db
       .select({
         id: tasks.id,
@@ -37,6 +68,7 @@ export async function getDayTasks(
   }
 }
 
+// 2. Submit daily work filing (Sanitized string length & auth verification)
 export async function submitDailyLog({
   taskId,
   loggedSummary,
@@ -44,15 +76,49 @@ export async function submitDailyLog({
   taskId: string;
   loggedSummary: string;
 }) {
-  if (!taskId || !loggedSummary.trim()) {
+  const cleanSummary = loggedSummary?.trim();
+
+  if (!taskId || !cleanSummary) {
     return { success: false, message: "A valid filing summary is required." };
   }
 
+  if (cleanSummary.length > 2500) {
+    return { success: false, message: "Summary exceeds 2500 character limit." };
+  }
+
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return { success: false, message: "Unauthorized. Please sign in." };
+    }
+
+    // Verify task exists
+    const [existingTask] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .limit(1);
+
+    if (!existingTask) {
+      return { success: false, message: "Story record not found." };
+    }
+
+    // Role check: Only the assignee, unit lead, or admin can file logs for this story
+    if (
+      user.role === "MEMBER" &&
+      existingTask.assignedToId &&
+      existingTask.assignedToId !== user.id
+    ) {
+      return {
+        success: false,
+        message: "Forbidden: You are only allowed to file proof for your assigned stories.",
+      };
+    }
+
     await db
       .update(tasks)
       .set({
-        loggedSummary: loggedSummary.trim(),
+        loggedSummary: cleanSummary,
         loggedAt: new Date(),
         status: "AWAITING_REVIEW",
       })
@@ -71,7 +137,7 @@ export async function submitDailyLog({
   }
 }
 
-
+// 3. Editorial Lead Desk Verification (RBAC: UNIT_LEAD or ADMIN ONLY)
 export async function verifyTaskAction({
   taskId,
   approved,
@@ -84,29 +150,24 @@ export async function verifyTaskAction({
   }
 
   try {
-    const supabase = await createClient();
-    const {
-      data: { user: authUser },
-    } = await supabase.auth.getUser();
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return { success: false, message: "Unauthorized: Session expired." };
+    }
 
-    let verifierId: string | null = null;
-    if (authUser?.email) {
-      const [editor] = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.email, authUser.email.toLowerCase()))
-        .limit(1);
-
-      if (editor) {
-        verifierId = editor.id;
-      }
+    // Hard RBAC constraint: Correspondents cannot verify or seal packages
+    if (user.role !== "UNIT_LEAD" && user.role !== "ADMIN") {
+      return {
+        success: false,
+        message: "Forbidden: Only Desk Leads and Editors can clear packages for broadcast.",
+      };
     }
 
     await db
       .update(tasks)
       .set({
         status: approved ? "COMPLETED" : "FLAGGED",
-        verifiedById: verifierId,
+        verifiedById: user.id,
         verifiedAt: new Date(),
       })
       .where(eq(tasks.id, taskId));
@@ -124,7 +185,7 @@ export async function verifyTaskAction({
   }
 }
 
-
+// 4. Schedule & Assign News Package (Input Sanitization & Length Guard)
 export async function createAssignedTask({
   title,
   description,
@@ -138,14 +199,26 @@ export async function createAssignedTask({
   unitId: string;
   assignedToId?: string;
 }) {
-  if (!title || !unitId || !dayOfWeek) {
+  const cleanTitle = title?.trim();
+  const cleanDesc = description?.trim() || null;
+
+  if (!cleanTitle || !unitId || !dayOfWeek) {
     return { success: false, message: "Title, desk, and rundown day are required." };
   }
 
+  if (cleanTitle.length > 250) {
+    return { success: false, message: "Title cannot exceed 250 characters." };
+  }
+
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return { success: false, message: "Unauthorized. Please log in." };
+    }
+
     await db.insert(tasks).values({
-      title: title.trim(),
-      description: description?.trim() || null,
+      title: cleanTitle,
+      description: cleanDesc,
       dayOfWeek,
       unitId,
       assignedToId: assignedToId || null,
@@ -165,7 +238,7 @@ export async function createAssignedTask({
   }
 }
 
-
+// 5. Update Task Details (CRUD: Update)
 export async function updateTask({
   taskId,
   title,
@@ -181,13 +254,20 @@ export async function updateTask({
   unitId?: string;
   assignedToId?: string | null;
 }) {
-  if (!taskId || !title?.trim()) {
+  const cleanTitle = title?.trim();
+
+  if (!taskId || !cleanTitle) {
     return { success: false, message: "Task ID and title are required." };
   }
 
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return { success: false, message: "Unauthorized: Please log in." };
+    }
+
     const updatePayload: Partial<typeof tasks.$inferInsert> = {
-      title: title.trim(),
+      title: cleanTitle,
       description: description?.trim() || null,
     };
 
@@ -210,16 +290,28 @@ export async function updateTask({
   }
 }
 
-
 export const updateTaskAction = updateTask;
 
-
+// 6. Delete Task (CRUD: Delete with Role Guard)
 export async function deleteTask(taskId: string) {
   if (!taskId) {
     return { success: false, message: "Task ID is required." };
   }
 
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return { success: false, message: "Unauthorized. Please log in." };
+    }
+
+    // Prevent regular members from deleting entire stories
+    if (user.role !== "UNIT_LEAD" && user.role !== "ADMIN") {
+      return {
+        success: false,
+        message: "Forbidden: Only Desk Leads or Admins can purge stories from the rundown.",
+      };
+    }
+
     await db.delete(tasks).where(eq(tasks.id, taskId));
 
     revalidatePath("/dashboard");
@@ -234,6 +326,5 @@ export async function deleteTask(taskId: string) {
     };
   }
 }
-
 
 export const deleteTaskAction = deleteTask;
