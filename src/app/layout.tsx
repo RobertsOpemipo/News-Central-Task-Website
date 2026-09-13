@@ -1,26 +1,69 @@
+// src/app/layout.tsx
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
-const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-sans",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+});
+
+const siteUrl = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : "http://localhost:3000";
 
 export const metadata: Metadata = {
-  title: "TaskDeck — Unit Task Logging & Oversight",
-  description: "Accountability and task verification console for units and team leads.",
-  icons: {
-    icon: "/favicon.ico", // Place your custom SVG or ICO here
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "TaskDeck Newsroom OS — Real-Time Broadcast & Story Oversight",
+    template: "%s | TaskDeck Newsroom",
+  },
+  description:
+    "High-tempo editorial workflow engine for broadcast desks. Continuous story filing, verification oversight, and telecast scheduling.",
+  keywords: [
+    "Newsroom OS",
+    "Broadcast Rundown",
+    "Editorial Oversight",
+    "Telecast Schedule",
+    "Story Dispatch",
+    "Next.js App Router",
+  ],
+  authors: [{ name: "NewsDeck Operations" }],
+  creator: "NewsDeck Operations",
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    url: siteUrl,
+    title: "TaskDeck Newsroom OS — Real-Time Broadcast & Story Oversight",
+    description:
+      "Continuous story filing, verification oversight, and telecast scheduling for modern newsrooms.",
+    siteName: "TaskDeck News",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "TaskDeck Newsroom OS — Real-Time Broadcast & Story Oversight",
+    description:
+      "Continuous story filing, verification oversight, and telecast scheduling for modern newsrooms.",
+  },
+  robots: {
+    index: true,
+    follow: true,
   },
 };
 
 export default function RootLayout({
   children,
-}: {
+}: Readonly<{
   children: React.ReactNode;
-}) {
+}>) {
   return (
-    <html lang="en" className={`${inter.variable} ${mono.variable}`}>
-      <body className="font-sans antialiased bg-slate-50 text-slate-900">
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body className="antialiased min-h-screen bg-[#07090E] text-slate-100 font-sans">
         {children}
       </body>
     </html>
