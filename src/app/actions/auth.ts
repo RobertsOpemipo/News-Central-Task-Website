@@ -29,12 +29,13 @@ export async function login(formData: FormData) {
   redirect("/dashboard");
 }
 
+// src/app/actions/auth.ts (register function)
 export async function register(formData: FormData) {
   const name = (formData.get("name") as string)?.trim();
   const email = (formData.get("email") as string)?.trim().toLowerCase();
   const password = formData.get("password") as string;
   const rawUnitId = formData.get("unitId") as string | null;
-  const role = (formData.get("role") as "MEMBER" | "UNIT_LEAD") || "MEMBER";
+  const role = (formData.get("role") as "MEMBER" | "UNIT_LEAD" | "ADMIN") || "MEMBER";
 
   if (!name || !email || !password) {
     return { success: false, message: "Name, email, and password are required." };
@@ -44,13 +45,12 @@ export async function register(formData: FormData) {
 
   const supabase = await createClient();
 
+  // 1. Sign up user in Supabase Auth
   const { data: authData, error: authError } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      data: {
-        name,
-      },
+      data: { name },
     },
   });
 
@@ -58,18 +58,32 @@ export async function register(formData: FormData) {
     return { success: false, message: authError?.message || "Registration failed." };
   }
 
+  // 2. Upsert into database users table
   try {
-    await db.insert(users).values({
-      name,
-      email,
-      role,
-      unitId: cleanUnitId,
-    });
-  } catch (dbError) {
-    console.error("Error inserting app user record:", dbError);
+    await db
+      .insert(users)
+      .values({
+        name,
+        email,
+        role,
+        unitId: cleanUnitId,
+      })
+      .onConflictDoUpdate({
+        target: users.email,
+        set: {
+          name,
+          role,
+          ...(cleanUnitId ? { unitId: cleanUnitId } : {}),
+        },
+      });
+  } catch (dbError: unknown) {
+    console.error("Error inserting/updating app user record:", dbError);
     return {
       success: false,
-      message: "Account created, but profile setup failed. Contact lead editor.",
+      message:
+        dbError instanceof Error
+          ? dbError.message
+          : "Account created, but profile setup failed. Contact lead editor.",
     };
   }
 
