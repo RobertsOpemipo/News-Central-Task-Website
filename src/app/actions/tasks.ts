@@ -1,4 +1,3 @@
-// src/app/actions/tasks.ts
 "use server";
 
 import { db } from "@/db";
@@ -7,7 +6,6 @@ import { eq, desc } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 
-// Internal helper: Extract verified DB session user
 async function getAuthenticatedUser() {
   const supabase = await createClient();
   const {
@@ -323,6 +321,46 @@ export async function deleteTask(taskId: string) {
     return {
       success: false,
       message: error instanceof Error ? error.message : "Failed to delete story.",
+    };
+  }
+}
+
+
+// 7. Drag-and-drop reschedule action (ADMIN only)
+export async function rescheduleTaskAction({
+  taskId,
+  targetDay,
+}: {
+  taskId: string;
+  targetDay: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+}) {
+  if (!taskId || !targetDay) {
+    return { success: false, message: "Task ID and target day are required." };
+  }
+
+  try {
+    const user = await getAuthenticatedUser();
+    if (!user || user.role !== "ADMIN") {
+      return {
+        success: false,
+        message: "Forbidden: Only Managing Editors can reschedule broadcast packages.",
+      };
+    }
+
+    await db
+      .update(tasks)
+      .set({ dayOfWeek: targetDay })
+      .where(eq(tasks.id, taskId));
+
+    revalidatePath("/dashboard");
+    revalidatePath("/dashboard/schedule");
+    revalidatePath("/dashboard/oversight");
+    return { success: true };
+  } catch (error: unknown) {
+    console.error("Failed to reschedule task:", error);
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : "Failed to reschedule task.",
     };
   }
 }

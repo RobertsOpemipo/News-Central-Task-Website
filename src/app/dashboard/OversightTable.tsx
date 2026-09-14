@@ -3,9 +3,9 @@
 import React, { useState, useTransition } from "react";
 import { verifyTaskAction } from "@/app/actions/tasks";
 import { StatusBadge, type StatusType } from "@/components/ui/Badge";
-import { Check, Flag, Loader2, FileText, User, Calendar } from "lucide-react";
+import { Check, Flag, FileText, User, Calendar, Search } from "lucide-react";
 
-interface TaskRecord {
+export interface TaskRecord {
   id: string;
   title: string;
   description: string | null;
@@ -17,12 +17,14 @@ interface TaskRecord {
   assigneeName: string | null;
 }
 
-interface OversightTableProps {
+export interface OversightTableProps {
   tasks: TaskRecord[];
+  isAdmin?: boolean;
 }
 
-export function OversightTable({ tasks }: OversightTableProps) {
+export function OversightTable({ tasks, isAdmin = false }: OversightTableProps) {
   const [filter, setFilter] = useState<string>("ALL");
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -34,30 +36,65 @@ export function OversightTable({ tasks }: OversightTableProps) {
     });
   };
 
-  const filteredTasks = filter === "ALL" 
-    ? tasks 
-    : tasks.filter((t) => t.status === filter);
+
+  const filteredTasks = tasks.filter((task) => {
+    const matchesStatus = filter === "ALL" || task.status === filter;
+    const query = searchQuery.toLowerCase().trim();
+
+    if (!query) return matchesStatus;
+
+    const matchesQuery =
+      task.title.toLowerCase().includes(query) ||
+      task.unitName.toLowerCase().includes(query) ||
+      Boolean(task.assigneeName && task.assigneeName.toLowerCase().includes(query)) ||
+      Boolean(task.loggedSummary && task.loggedSummary.toLowerCase().includes(query));
+
+    return matchesStatus && matchesQuery;
+  });
 
   return (
     <div className="space-y-4">
-      {/* Filter Tabs */}
-      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 text-xs">
-        {["ALL", "AWAITING_REVIEW", "COMPLETED", "FLAGGED", "PENDING"].map((st) => (
-          <button
-            key={st}
-            onClick={() => setFilter(st)}
-            className={`px-3 py-1.5 rounded-xl font-medium transition-all shrink-0 ${
-              filter === st
-                ? "bg-slate-900 text-white font-semibold shadow-2xs"
-                : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-            }`}
-          >
-            {st.replace("_", " ")}
-          </button>
-        ))}
+      {/* Control Bar: Status Tabs + Live Search (Admin Only) */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0 text-xs">
+          {["ALL", "AWAITING_REVIEW", "COMPLETED", "FLAGGED", "PENDING"].map((st) => (
+            <button
+              key={st}
+              onClick={() => setFilter(st)}
+              className={`px-3 py-1.5 rounded-xl font-medium transition-all shrink-0 ${
+                filter === st
+                  ? "bg-slate-900 text-white font-semibold shadow-2xs"
+                  : "bg-slate-100/70 text-slate-600 hover:bg-slate-200/60"
+              }`}
+            >
+              {st.replace("_", " ")}
+            </button>
+          ))}
+        </div>
+
+        {isAdmin && (
+          <div className="relative w-full sm:w-72">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search headline, desk, anchor..."
+              className="w-full text-xs rounded-xl border border-slate-200 pl-8 pr-8 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-sans"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-mono"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* MOBILE VIEW: Card Stack (hidden on desktop) */}
+      {/* MOBILE VIEW: Card Stack */}
       <div className="block lg:hidden space-y-3">
         {filteredTasks.length === 0 ? (
           <div className="p-8 text-center bg-white rounded-2xl border border-slate-200 text-slate-400 text-xs font-mono">
@@ -124,7 +161,7 @@ export function OversightTable({ tasks }: OversightTableProps) {
         )}
       </div>
 
-      {/* DESKTOP VIEW: Full Structured Table (hidden on mobile) */}
+      {/* DESKTOP VIEW: Structured Table */}
       <div className="hidden lg:block bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono text-[11px]">

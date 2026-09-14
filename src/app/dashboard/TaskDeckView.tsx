@@ -1,17 +1,26 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { StatusBadge, type StatusType } from "@/components/ui/Badge";
 import { TaskLoggerDrawer } from "@/app/dashboard/TaskLoggerDrawer";
 import { AssignTaskModal } from "@/app/dashboard/AssignTaskModal";
-import { CheckSquare, Calendar, ChevronRight, User } from "lucide-react";
+import { EditTaskModal } from "@/app/dashboard/EditTaskModal";
+import { deleteTask } from "@/app/actions/tasks";
+import {
+  CheckSquare,
+  Calendar,
+  User,
+  Trash2,
+  Edit2,
+  AlertCircle,
+} from "lucide-react";
 
-interface TaskItem {
+export interface TaskItem {
   id: string;
   title: string;
   description: string | null;
-  dayOfWeek: string;
+  dayOfWeek: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
   status: StatusType;
   loggedSummary: string | null;
   loggedAt: Date | null;
@@ -20,34 +29,67 @@ interface TaskItem {
   assigneeEmail: string | null;
 }
 
-interface OptionItem {
+export interface OptionItem {
   id: string;
   name: string;
 }
 
 interface TaskDeckViewProps {
   initialTasks: TaskItem[];
-  currentDay: string;
+  currentDay: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun" | string;
   availableUnits?: OptionItem[];
   availableUsers?: OptionItem[];
+  isAdmin?: boolean;
 }
 
-const DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAYS_OF_WEEK: Array<"Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"> = [
+  "Mon",
+  "Tue",
+  "Wed",
+  "Thu",
+  "Fri",
+  "Sat",
+  "Sun",
+];
 
 export function TaskDeckView({
   initialTasks,
   currentDay,
   availableUnits = [],
   availableUsers = [],
+  isAdmin = false,
 }: TaskDeckViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+
+  const [selectedTaskForLog, setSelectedTaskForLog] = useState<TaskItem | null>(null);
+  const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
 
   const handleDayChange = (day: string) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("day", day);
     router.push(`/dashboard?${params.toString()}`);
+  };
+
+  const handleDelete = (taskId: string) => {
+    if (!confirm("Are you sure you want to purge this package from the broadcast rundown?")) {
+      return;
+    }
+
+    setActionError(null);
+    setIsDeletingId(taskId);
+
+    startTransition(async () => {
+      const res = await deleteTask(taskId);
+      setIsDeletingId(null);
+
+      if (!res.success) {
+        setActionError(res.message || "Failed to purge package.");
+      }
+    });
   };
 
   const completedCount = initialTasks.filter((t) => t.status === "COMPLETED").length;
@@ -68,7 +110,7 @@ export function TaskDeckView({
 
         {/* Action Controls: Modal & Day Selector */}
         <div className="flex flex-wrap items-center gap-2">
-          {availableUnits.length > 0 && availableUsers.length > 0 && (
+          {isAdmin && (
             <AssignTaskModal
               units={availableUnits}
               users={availableUsers}
@@ -97,7 +139,14 @@ export function TaskDeckView({
 
       {/* Content Body */}
       <div className="p-4 sm:p-6 lg:p-8 max-w-6xl w-full mx-auto space-y-4 sm:space-y-6">
-        {/* Breaking Wire Ticker */}
+        {actionError && (
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>{actionError}</span>
+          </div>
+        )}
+
+        {/* Live Wire Banner */}
         <div className="bg-slate-900 text-white rounded-2xl px-3.5 py-2.5 flex items-center justify-between shadow-xs border border-slate-800 text-xs">
           <div className="flex items-center gap-2.5 overflow-hidden">
             <span className="px-1.5 py-0.5 rounded bg-rose-600 font-mono text-[9px] font-bold uppercase tracking-wider shrink-0 animate-pulse">
@@ -146,7 +195,11 @@ export function TaskDeckView({
           <div className="text-center py-14 border border-dashed border-slate-200 rounded-2xl bg-white/60">
             <CheckSquare className="w-7 h-7 text-slate-300 mx-auto mb-1.5" />
             <p className="text-xs font-semibold text-slate-600">No news packages scheduled for {currentDay}</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">Use &quot;Assign Story&quot; above to schedule a package.</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              {isAdmin
+                ? "Use \"Assign Story\" above to schedule a package."
+                : "No packages have been dispatched for this cycle."}
+            </p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -189,17 +242,40 @@ export function TaskDeckView({
                   </div>
                 </div>
 
+                {/* Card Actions */}
                 <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
                   <div className="hidden sm:block">
                     <StatusBadge status={task.status} />
                   </div>
+
                   {task.status !== "COMPLETED" && (
                     <button
-                      onClick={() => setSelectedTask(task)}
-                      className="w-full sm:w-auto px-3 py-1.5 text-xs font-medium text-blue-600 hover:text-blue-700 bg-blue-50/70 hover:bg-blue-100 rounded-xl border border-blue-200 transition-colors text-center"
+                      onClick={() => setSelectedTaskForLog(task)}
+                      className="px-2.5 py-1.5 text-xs font-medium text-blue-600 hover:text-blue-700 bg-blue-50/70 hover:bg-blue-100 rounded-xl border border-blue-200 transition-colors"
                     >
                       {task.status === "AWAITING_REVIEW" ? "Update Filing" : "File Work Proof"}
                     </button>
+                  )}
+
+                  {isAdmin && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setEditingTask(task)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                        title="Edit story details"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        disabled={isPending && isDeletingId === task.id}
+                        onClick={() => handleDelete(task.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-50"
+                        title="Purge package"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -208,17 +284,34 @@ export function TaskDeckView({
         )}
       </div>
 
-      {/* Slide-over Drawer */}
-      {selectedTask && (
+      {/* Slide-over Drawer for Filing Proof */}
+      {selectedTaskForLog && (
         <TaskLoggerDrawer
           task={{
-            id: selectedTask.id,
-            title: selectedTask.title,
-            unit: selectedTask.unitName,
-            assignee: selectedTask.assigneeName ?? "Correspondent",
-            initialSummary: selectedTask.loggedSummary ?? "",
+            id: selectedTaskForLog.id,
+            title: selectedTaskForLog.title,
+            unit: selectedTaskForLog.unitName,
+            assignee: selectedTaskForLog.assigneeName ?? "Correspondent",
+            initialSummary: selectedTaskForLog.loggedSummary ?? "",
           }}
-          onClose={() => setSelectedTask(null)}
+          onClose={() => setSelectedTaskForLog(null)}
+        />
+      )}
+
+      {/* Edit Story Modal */}
+      {editingTask && (
+        <EditTaskModal
+          task={{
+            id: editingTask.id,
+            title: editingTask.title,
+            description: editingTask.description,
+            dayOfWeek: editingTask.dayOfWeek,
+            unitId: availableUnits.find((u) => u.name === editingTask.unitName)?.id,
+            assignedToId: availableUsers.find((u) => u.name === editingTask.assigneeName)?.id,
+          }}
+          units={availableUnits}
+          users={availableUsers}
+          onClose={() => setEditingTask(null)}
         />
       )}
     </div>

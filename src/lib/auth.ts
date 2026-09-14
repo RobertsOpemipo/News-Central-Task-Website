@@ -1,8 +1,7 @@
-// src/lib/auth.ts
 import { createClient } from "@/lib/supabase/server";
 import { db } from "@/db";
 import { users, units } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 export interface CurrentUserProfile {
   id: string;
@@ -23,24 +22,26 @@ export async function getCurrentUser(): Promise<CurrentUserProfile | null> {
       return null;
     }
 
-    // 1. Fetch user record by email
+    const authEmail = authUser.email.trim().toLowerCase();
+
+    // Fetch user record using case-insensitive SQL matching
     const [dbUser] = await db
       .select()
       .from(users)
-      .where(eq(users.email, authUser.email.toLowerCase()))
+      .where(sql`lower(${users.email}) = ${authEmail}`)
       .limit(1);
 
     if (!dbUser) {
       return {
         id: authUser.id,
-        name: authUser.user_metadata?.name || authUser.email.split("@")[0],
-        email: authUser.email,
+        name: (authUser.user_metadata?.name as string | undefined) || authEmail.split("@")[0],
+        email: authEmail,
         role: "MEMBER",
         unitName: "General Desk",
       };
     }
 
-    // 2. Fetch assigned unit name safely
+    // Fetch assigned unit name safely
     let unitTitle = "General Newsroom";
     if (dbUser.unitId) {
       const [assignedUnit] = await db
@@ -62,11 +63,11 @@ export async function getCurrentUser(): Promise<CurrentUserProfile | null> {
       unitName: unitTitle,
     };
   } catch (error: unknown) {
-    // Let Next.js handle its internal dynamic bailout signal without logging a false error
     if (
-      error instanceof Error &&
+      typeof error === "object" &&
+      error !== null &&
       "digest" in error &&
-      error.digest === "DYNAMIC_SERVER_USAGE"
+      (error as { digest: unknown }).digest === "DYNAMIC_SERVER_USAGE"
     ) {
       throw error;
     }

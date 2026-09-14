@@ -61,12 +61,12 @@ export function AssignTaskModal({ units, users, currentDay }: AssignTaskModalPro
   return (
     <>
       <button
-        onClick={() => setIsOpen(true)}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium shadow-xs transition-colors"
-      >
-        <Plus className="w-4 h-4" />
-        <span>Assign Story</span>
-      </button>
+  onClick={() => setIsOpen(true)}
+  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium shadow-xs transition-colors"
+>
+  <Plus className="w-3.5 h-3.5" />
+  <span>Assign Story</span>
+</button>
 
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
