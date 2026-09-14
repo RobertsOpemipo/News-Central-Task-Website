@@ -134,7 +134,7 @@ export default function LandingPage() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ ...transitions.smooth, delay: 0.2 }}
-            className="text-base sm:text-lg text-white/50 max-w-xl mx-auto font-normal leading-relaxed"
+            className="text-sm sm:text-base text-white/50 max-w-xl mx-auto font-normal leading-relaxed"
           >
             A high-tempo broadcast control platform. Features an iOS-style calendar matrix, 
             instant drag-and-drop rescheduling, and a high-volume editorial clearance desk.
