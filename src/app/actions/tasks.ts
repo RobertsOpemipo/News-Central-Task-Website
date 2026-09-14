@@ -1,3 +1,4 @@
+// src/app/actions/tasks.ts
 "use server";
 
 import { db } from "@/db";
@@ -5,6 +6,35 @@ import { tasks, units, users } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import {
+  SubmitLogSchema,
+  VerifyTaskSchema,
+  CreateTaskSchema,
+  UpdateTaskSchema,
+  RescheduleTaskSchema,
+  RescheduleTaskToDateSchema,
+  DeleteTaskSchema,
+  DayOfWeekEnum,
+} from "@/lib/validations";
+
+// Simple in-memory rate limiter per user session
+const rateLimitTracker = new Map<string, { count: number; resetAt: number }>();
+
+function assertRateLimit(userId: string, limit = 25, windowMs = 60_000) {
+  const now = Date.now();
+  const entry = rateLimitTracker.get(userId);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitTracker.set(userId, { count: 1, resetAt: now + windowMs });
+    return;
+  }
+
+  if (entry.count >= limit) {
+    throw new Error("Too many requests. Please pause before executing further commands.");
+  }
+
+  entry.count += 1;
+}
 
 async function getAuthenticatedUser() {
   const supabase = await createClient();
@@ -30,15 +60,18 @@ async function getAuthenticatedUser() {
   return dbUser || null;
 }
 
-// 1. Fetch tasks for a selected day (Accessible by any authenticated user)
-export async function getDayTasks(
-  day: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"
-) {
+function refreshAllTaskViews() {
+  revalidatePath("/dashboard");
+  revalidatePath("/dashboard/oversight");
+  revalidatePath("/dashboard/schedule");
+}
+
+// 1. Fetch tasks for a selected day (Any authenticated user)
+export async function getDayTasks(day: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun") {
   try {
+    const validDay = DayOfWeekEnum.parse(day);
     const user = await getAuthenticatedUser();
-    if (!user) {
-      return [];
-    }
+    if (!user) return [];
 
     const records = await db
       .select({
@@ -46,6 +79,7 @@ export async function getDayTasks(
         title: tasks.title,
         description: tasks.description,
         dayOfWeek: tasks.dayOfWeek,
+        scheduledFor: tasks.scheduledFor,
         status: tasks.status,
         loggedSummary: tasks.loggedSummary,
         loggedAt: tasks.loggedAt,
@@ -56,7 +90,7 @@ export async function getDayTasks(
       .from(tasks)
       .innerJoin(units, eq(tasks.unitId, units.id))
       .leftJoin(users, eq(tasks.assignedToId, users.id))
-      .where(eq(tasks.dayOfWeek, day))
+      .where(eq(tasks.dayOfWeek, validDay))
       .orderBy(desc(tasks.createdAt));
 
     return records;
@@ -66,42 +100,31 @@ export async function getDayTasks(
   }
 }
 
-// 2. Submit daily work filing (Sanitized string length & auth verification)
-export async function submitDailyLog({
-  taskId,
-  loggedSummary,
-}: {
-  taskId: string;
-  loggedSummary: string;
-}) {
-  const cleanSummary = loggedSummary?.trim();
-
-  if (!taskId || !cleanSummary) {
-    return { success: false, message: "A valid filing summary is required." };
-  }
-
-  if (cleanSummary.length > 2500) {
-    return { success: false, message: "Summary exceeds 2500 character limit." };
-  }
-
+// 2. Submit daily work filing (Sanitized via Zod & Assignee Role Guard)
+export async function submitDailyLog(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user) {
       return { success: false, message: "Unauthorized. Please sign in." };
     }
 
-    // Verify task exists
+    assertRateLimit(user.id, 15, 60_000);
+    const input = SubmitLogSchema.parse(rawInput);
+
     const [existingTask] = await db
-      .select()
+      .select({
+        id: tasks.id,
+        assignedToId: tasks.assignedToId,
+      })
       .from(tasks)
-      .where(eq(tasks.id, taskId))
+      .where(eq(tasks.id, input.taskId))
       .limit(1);
 
     if (!existingTask) {
       return { success: false, message: "Story record not found." };
     }
 
-    // Role check: Only the assignee, unit lead, or admin can file logs for this story
+    // Role check: MEMBER can only submit proof for their assigned story
     if (
       user.role === "MEMBER" &&
       existingTask.assignedToId &&
@@ -109,22 +132,20 @@ export async function submitDailyLog({
     ) {
       return {
         success: false,
-        message: "Forbidden: You are only allowed to file proof for your assigned stories.",
+        message: "Forbidden: You may only file proof for your designated stories.",
       };
     }
 
     await db
       .update(tasks)
       .set({
-        loggedSummary: cleanSummary,
+        loggedSummary: input.loggedSummary,
         loggedAt: new Date(),
         status: "AWAITING_REVIEW",
       })
-      .where(eq(tasks.id, taskId));
+      .where(eq(tasks.id, input.taskId));
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/oversight");
-    revalidatePath("/dashboard/schedule");
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Failed to submit daily log:", error);
@@ -136,43 +157,33 @@ export async function submitDailyLog({
 }
 
 // 3. Editorial Lead Desk Verification (RBAC: UNIT_LEAD or ADMIN ONLY)
-export async function verifyTaskAction({
-  taskId,
-  approved,
-}: {
-  taskId: string;
-  approved: boolean;
-}) {
-  if (!taskId) {
-    return { success: false, message: "Task ID is required." };
-  }
-
+export async function verifyTaskAction(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user) {
       return { success: false, message: "Unauthorized: Session expired." };
     }
 
-    // Hard RBAC constraint: Correspondents cannot verify or seal packages
     if (user.role !== "UNIT_LEAD" && user.role !== "ADMIN") {
       return {
         success: false,
-        message: "Forbidden: Only Desk Leads and Editors can clear packages for broadcast.",
+        message: "Forbidden: Only Desk Leads and Admins can seal or flag packages.",
       };
     }
+
+    assertRateLimit(user.id, 30, 60_000);
+    const input = VerifyTaskSchema.parse(rawInput);
 
     await db
       .update(tasks)
       .set({
-        status: approved ? "COMPLETED" : "FLAGGED",
+        status: input.approved ? "COMPLETED" : "FLAGGED",
         verifiedById: user.id,
         verifiedAt: new Date(),
       })
-      .where(eq(tasks.id, taskId));
+      .where(eq(tasks.id, input.taskId));
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/oversight");
-    revalidatePath("/dashboard/schedule");
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Verification action failed:", error);
@@ -183,49 +194,34 @@ export async function verifyTaskAction({
   }
 }
 
-// 4. Schedule & Assign News Package (Input Sanitization & Length Guard)
-export async function createAssignedTask({
-  title,
-  description,
-  dayOfWeek,
-  unitId,
-  assignedToId,
-}: {
-  title: string;
-  description?: string;
-  dayOfWeek: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
-  unitId: string;
-  assignedToId?: string;
-}) {
-  const cleanTitle = title?.trim();
-  const cleanDesc = description?.trim() || null;
-
-  if (!cleanTitle || !unitId || !dayOfWeek) {
-    return { success: false, message: "Title, desk, and rundown day are required." };
-  }
-
-  if (cleanTitle.length > 250) {
-    return { success: false, message: "Title cannot exceed 250 characters." };
-  }
-
+// 4. Schedule & Assign News Package (ADMIN or UNIT_LEAD)
+export async function createAssignedTask(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user) {
       return { success: false, message: "Unauthorized. Please log in." };
     }
 
+    if (user.role !== "UNIT_LEAD" && user.role !== "ADMIN") {
+      return {
+        success: false,
+        message: "Forbidden: You do not have permission to assign packages.",
+      };
+    }
+
+    assertRateLimit(user.id, 20, 60_000);
+    const input = CreateTaskSchema.parse(rawInput);
+
     await db.insert(tasks).values({
-      title: cleanTitle,
-      description: cleanDesc,
-      dayOfWeek,
-      unitId,
-      assignedToId: assignedToId || null,
+      title: input.title,
+      description: input.description ?? null,
+      dayOfWeek: input.dayOfWeek,
+      unitId: input.unitId,
+      assignedToId: input.assignedToId ?? null,
       status: "PENDING",
     });
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/oversight");
-    revalidatePath("/dashboard/schedule");
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Failed to create assigned task:", error);
@@ -237,47 +233,37 @@ export async function createAssignedTask({
 }
 
 // 5. Update Task Details (CRUD: Update)
-export async function updateTask({
-  taskId,
-  title,
-  description,
-  dayOfWeek,
-  unitId,
-  assignedToId,
-}: {
-  taskId: string;
-  title: string;
-  description?: string;
-  dayOfWeek?: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
-  unitId?: string;
-  assignedToId?: string | null;
-}) {
-  const cleanTitle = title?.trim();
-
-  if (!taskId || !cleanTitle) {
-    return { success: false, message: "Task ID and title are required." };
-  }
-
+export async function updateTask(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user) {
       return { success: false, message: "Unauthorized: Please log in." };
     }
 
+    if (user.role !== "UNIT_LEAD" && user.role !== "ADMIN") {
+      return {
+        success: false,
+        message: "Forbidden: You do not have permission to modify rundown records.",
+      };
+    }
+
+    assertRateLimit(user.id, 30, 60_000);
+    const input = UpdateTaskSchema.parse(rawInput);
+
     const updatePayload: Partial<typeof tasks.$inferInsert> = {
-      title: cleanTitle,
-      description: description?.trim() || null,
+      title: input.title,
+      description: input.description ?? null,
     };
 
-    if (dayOfWeek) updatePayload.dayOfWeek = dayOfWeek;
-    if (unitId) updatePayload.unitId = unitId;
-    if (assignedToId !== undefined) updatePayload.assignedToId = assignedToId || null;
+    if (input.dayOfWeek) updatePayload.dayOfWeek = input.dayOfWeek;
+    if (input.unitId) updatePayload.unitId = input.unitId;
+    if (input.assignedToId !== undefined) {
+      updatePayload.assignedToId = input.assignedToId ?? null;
+    }
 
-    await db.update(tasks).set(updatePayload).where(eq(tasks.id, taskId));
+    await db.update(tasks).set(updatePayload).where(eq(tasks.id, input.taskId));
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/oversight");
-    revalidatePath("/dashboard/schedule");
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Failed to update task:", error);
@@ -291,30 +277,26 @@ export async function updateTask({
 export const updateTaskAction = updateTask;
 
 // 6. Delete Task (CRUD: Delete with Role Guard)
-export async function deleteTask(taskId: string) {
-  if (!taskId) {
-    return { success: false, message: "Task ID is required." };
-  }
-
+export async function deleteTask(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user) {
       return { success: false, message: "Unauthorized. Please log in." };
     }
 
-    // Prevent regular members from deleting entire stories
-    if (user.role !== "UNIT_LEAD" && user.role !== "ADMIN") {
+    if (user.role !== "ADMIN") {
       return {
         success: false,
-        message: "Forbidden: Only Desk Leads or Admins can purge stories from the rundown.",
+        message: "Forbidden: Only Managing Editors can purge stories from the rundown.",
       };
     }
 
-    await db.delete(tasks).where(eq(tasks.id, taskId));
+    const payload = typeof rawInput === "string" ? { taskId: rawInput } : rawInput;
+    const input = DeleteTaskSchema.parse(payload);
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/oversight");
-    revalidatePath("/dashboard/schedule");
+    await db.delete(tasks).where(eq(tasks.id, input.taskId));
+
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Failed to delete task:", error);
@@ -325,19 +307,10 @@ export async function deleteTask(taskId: string) {
   }
 }
 
+export const deleteTaskAction = deleteTask;
 
-// 7. Drag-and-drop reschedule action (ADMIN only)
-export async function rescheduleTaskAction({
-  taskId,
-  targetDay,
-}: {
-  taskId: string;
-  targetDay: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
-}) {
-  if (!taskId || !targetDay) {
-    return { success: false, message: "Task ID and target day are required." };
-  }
-
+// 7. Drag-and-drop reschedule action by day enum (ADMIN only)
+export async function rescheduleTaskAction(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user || user.role !== "ADMIN") {
@@ -347,14 +320,14 @@ export async function rescheduleTaskAction({
       };
     }
 
+    const input = RescheduleTaskSchema.parse(rawInput);
+
     await db
       .update(tasks)
-      .set({ dayOfWeek: targetDay })
-      .where(eq(tasks.id, taskId));
+      .set({ dayOfWeek: input.targetDay })
+      .where(eq(tasks.id, input.taskId));
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/schedule");
-    revalidatePath("/dashboard/oversight");
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Failed to reschedule task:", error);
@@ -364,18 +337,9 @@ export async function rescheduleTaskAction({
     };
   }
 }
-// src/app/actions/tasks.ts
-export async function rescheduleTaskToDateAction({
-  taskId,
-  targetDate,
-}: {
-  taskId: string;
-  targetDate: string; // "YYYY-MM-DD"
-}) {
-  if (!taskId || !targetDate) {
-    return { success: false, message: "Task ID and target date are required." };
-  }
 
+// 8. Exact Date Drag-and-Drop Reschedule Action (ADMIN only)
+export async function rescheduleTaskToDateAction(rawInput: unknown) {
   try {
     const user = await getAuthenticatedUser();
     if (!user || user.role !== "ADMIN") {
@@ -385,21 +349,21 @@ export async function rescheduleTaskToDateAction({
       };
     }
 
-    const dateObj = new Date(targetDate);
+    const input = RescheduleTaskToDateSchema.parse(rawInput);
+
+    const dateObj = new Date(input.targetDate);
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
     const dayOfWeek = dayNames[dateObj.getUTCDay()];
 
     await db
       .update(tasks)
       .set({
-        scheduledFor: targetDate,
+        scheduledFor: input.targetDate,
         dayOfWeek,
       })
-      .where(eq(tasks.id, taskId));
+      .where(eq(tasks.id, input.taskId));
 
-    revalidatePath("/dashboard");
-    revalidatePath("/dashboard/schedule");
-    revalidatePath("/dashboard/oversight");
+    refreshAllTaskViews();
     return { success: true };
   } catch (error: unknown) {
     console.error("Failed to reschedule task to date:", error);
@@ -409,5 +373,3 @@ export async function rescheduleTaskToDateAction({
     };
   }
 }
-
-export const deleteTaskAction = deleteTask;
