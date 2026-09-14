@@ -1,30 +1,21 @@
+// src/app/dashboard/schedule/page.tsx
 import { db } from "@/db";
 import { tasks, units, users } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { getCurrentUser } from "@/lib/auth";
-import { BroadcastScheduleGrid } from "@/app/dashboard/BroadcastScheduleGrid";
-import type { StatusType } from "@/components/ui/Badge";
-
-export interface ScheduledTaskRecord {
-  id: string;
-  title: string;
-  description: string | null;
-  dayOfWeek: string;
-  status: StatusType;
-  unitName: string;
-  assigneeName: string | null;
-}
+import { BroadcastScheduleGrid, type ScheduledTask } from "@/app/dashboard/BroadcastScheduleGrid";
 
 export default async function SchedulePage() {
   const currentUser = await getCurrentUser();
   const isAdmin = currentUser?.role === "ADMIN";
 
-  const allTasks: ScheduledTaskRecord[] = await db
+  const allTasks: ScheduledTask[] = await db
     .select({
       id: tasks.id,
       title: tasks.title,
       description: tasks.description,
       dayOfWeek: tasks.dayOfWeek,
+      scheduledFor: tasks.scheduledFor,
       status: tasks.status,
       unitName: units.name,
       assigneeName: users.name,
@@ -41,7 +32,7 @@ export default async function SchedulePage() {
           Broadcast Master Schedule
         </h1>
         <p className="text-xs text-slate-500">
-          Program telecast packages across the 7-day broadcast schedule.
+          Full multi-year program calendar and telecast packages across the newsroom.
         </p>
       </div>
 

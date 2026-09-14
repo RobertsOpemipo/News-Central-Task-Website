@@ -1,3 +1,4 @@
+// src/app/dashboard/TaskDeckView.tsx
 "use client";
 
 import React, { useState, useTransition } from "react";
@@ -7,6 +8,7 @@ import { TaskLoggerDrawer } from "@/app/dashboard/TaskLoggerDrawer";
 import { AssignTaskModal } from "@/app/dashboard/AssignTaskModal";
 import { EditTaskModal } from "@/app/dashboard/EditTaskModal";
 import { deleteTask } from "@/app/actions/tasks";
+import { getTodayDayOfWeek } from "@/lib/date-utils";
 import {
   CheckSquare,
   Calendar,
@@ -61,6 +63,7 @@ export function TaskDeckView({
 }: TaskDeckViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const actualToday = getTodayDayOfWeek();
 
   const [selectedTaskForLog, setSelectedTaskForLog] = useState<TaskItem | null>(null);
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
@@ -120,19 +123,32 @@ export function TaskDeckView({
 
           {/* Horizontally scrollable day pills on small screens */}
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80 overflow-x-auto max-w-full">
-            {DAYS_OF_WEEK.map((day) => (
-              <button
-                key={day}
-                onClick={() => handleDayChange(day)}
-                className={`px-2.5 py-1 text-xs font-mono font-medium rounded-lg transition-all shrink-0 ${
-                  currentDay === day
-                    ? "bg-white text-blue-600 shadow-2xs border border-slate-200/60 font-semibold"
-                    : "text-slate-500 hover:text-slate-900"
-                }`}
-              >
-                {day}
-              </button>
-            ))}
+            {DAYS_OF_WEEK.map((day) => {
+              const isSelected = currentDay === day;
+              const isToday = actualToday === day;
+
+              return (
+                <button
+                  key={day}
+                  onClick={() => handleDayChange(day)}
+                  className={`relative px-2.5 py-1 text-xs font-mono font-medium rounded-lg transition-all shrink-0 flex items-center gap-1 ${
+                    isSelected
+                      ? "bg-white text-blue-600 shadow-2xs border border-slate-200/60 font-semibold"
+                      : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  <span>{day}</span>
+                  {isToday && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        isSelected ? "bg-blue-600" : "bg-emerald-500"
+                      }`}
+                      title="Today"
+                    />
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </header>
@@ -197,7 +213,7 @@ export function TaskDeckView({
             <p className="text-xs font-semibold text-slate-600">No news packages scheduled for {currentDay}</p>
             <p className="text-[11px] text-slate-400 mt-0.5">
               {isAdmin
-                ? "Use \"Assign Story\" above to schedule a package."
+                ? 'Use "Assign Story" above to schedule a package.'
                 : "No packages have been dispatched for this cycle."}
             </p>
           </div>

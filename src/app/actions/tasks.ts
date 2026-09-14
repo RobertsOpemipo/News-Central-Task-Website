@@ -364,5 +364,50 @@ export async function rescheduleTaskAction({
     };
   }
 }
+// src/app/actions/tasks.ts
+export async function rescheduleTaskToDateAction({
+  taskId,
+  targetDate,
+}: {
+  taskId: string;
+  targetDate: string; // "YYYY-MM-DD"
+}) {
+  if (!taskId || !targetDate) {
+    return { success: false, message: "Task ID and target date are required." };
+  }
+
+  try {
+    const user = await getAuthenticatedUser();
+    if (!user || user.role !== "ADMIN") {
+      return {
+        success: false,
+        message: "Forbidden: Only Managing Editors can reschedule broadcast packages.",
+      };
+    }
+
+    const dateObj = new Date(targetDate);
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+    const dayOfWeek = dayNames[dateObj.getUTCDay()];
+
+    await db
+      .update(tasks)
+      .set({
+        scheduledFor: targetDate,
+        dayOfWeek,
+      })
+      .where(eq(tasks.id, taskId));
+
+    revalidatePath("/dashboard");
+    revalidatePath("/dashboard/schedule");
+    revalidatePath("/dashboard/oversight");
+    return { success: true };
+  } catch (error: unknown) {
+    console.error("Failed to reschedule task to date:", error);
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : "Failed to reschedule task.",
+    };
+  }
+}
 
 export const deleteTaskAction = deleteTask;
